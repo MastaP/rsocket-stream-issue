@@ -1,0 +1,12 @@
+spring:
+  codec:
+    max-in-memory-size: -1
+  data:
+    mongodb:
+      host: "mongodb://localhost"
+      port: 27017
+      dbname: "test"
+  rsocket:
+    server:
+      transport: WEBSOCKET
+      mapping-path: "/rs"
