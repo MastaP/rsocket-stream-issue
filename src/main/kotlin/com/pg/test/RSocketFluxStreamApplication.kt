@@ -17,9 +17,9 @@ import org.springframework.scheduling.annotation.Async
 import org.springframework.stereotype.Controller
 import reactor.core.publisher.Flux
 import reactor.core.publisher.Mono
-import reactor.core.scheduler.Schedulers
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.atomic.AtomicLong
+import java.util.function.BiFunction
 
 @SpringBootApplication
 @Controller
@@ -28,19 +28,15 @@ class RSocketFluxStreamApplication(val mongo: ReactiveMongoTemplate) {
     @Async
     @EventListener(ApplicationReadyEvent::class)
     fun onStartup(event: ApplicationReadyEvent) {
-        mongo.save(MyKey()).subscribe {
-            println("Added key: $it")
-        }
+        val key = mongo.save(MyKey()).block()
+        println("Added key: $key")
     }
 
     @MessageMapping("test.{mode}")
     fun testFluxStream(@DestinationVariable mode: Int, flux: Flux<MyEntry>): Flux<MyEntry> {
         val counter = AtomicLong(0L)
         println("testFluxStream(), mode $mode")
-        return flux
-            .transformDeferred {
-                process(mode, it)
-            }
+        return process(mode, flux)
             .doOnNext {
                 println("testFluxStream(): next #${counter.incrementAndGet()} '${it.order}', ${it.fresh}")
             }
@@ -50,34 +46,31 @@ class RSocketFluxStreamApplication(val mongo: ReactiveMongoTemplate) {
     }
 
     fun process(mode: Int, flux: Flux<MyEntry>): Flux<MyEntry> {
-        val round: Mono<String> = Mono
+        val key: Mono<MyKey> = Mono
             .defer {
                 println("getKey: defer")
                 getKey(mode)
             }
-            .cache()
+//            .cache()
             //.log()
 
-        return flux
-            .switchMap { e ->
-                round
-                    .map {
-                        MyEntry(e.myId, e.order,"$it: ${e.value}", e.fresh.not())
-                    }
+        return Flux.combineLatest<MyKey, MyEntry, Pair<MyKey, MyEntry>>(key, flux, BiFunction { r, e -> Pair(r, e) })
+            .map { (k, e) ->
+                MyEntry(e.myId, e.order, "${k.key}: ${e.value}", e.fresh.not())
             }
     }
 
-    fun getKey(mode: Int): Mono<String> = when (mode) {
+    fun getKey(mode: Int): Mono<MyKey> = when (mode) {
         1 -> getKeyFromMongo() // fails
         2 -> Mono.fromFuture(CompletableFuture.supplyAsync { getKeyFromMongo().block() }) // yuck, fails
         3 -> Mono.just(CompletableFuture.supplyAsync { getKeyFromMongo().block() }.get()!!) // yuck, works
-        else -> Mono.just(MyKey("Direct")).map { it.key } // works
+        else -> Mono.just(MyKey("Direct")) // works
     }
 
-    fun getKeyFromMongo(): Mono<String> = mongo
-        .findAll(MyKey::class.java).map {
+    fun getKeyFromMongo(): Mono<MyKey> = mongo
+        .findAll(MyKey::class.java)
+        .doOnNext {
             println("getKey: findAll: $it")
-            it.key
         }
         //.subscribeOn(Schedulers.elastic())
         .next()
